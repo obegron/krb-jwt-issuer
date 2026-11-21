@@ -47,7 +47,7 @@ parser.add_argument('--subject', help='first allowed principal, e.g. alice@EXAMP
 parser.add_argument('--audience', default='homelab-test', help='audience that principal may request (default: %(default)s)')
 parser.add_argument('--cert-dir', help='directory containing fullchain.pem and privkey.pem')
 parser.add_argument('--keytab', type=Path, help='existing keytab for HTTP/<host> (use when the KDC is on another machine); default: create it with kadmin.local')
-parser.add_argument('--nginx-user', default='www-data', help='user nginx workers run as (default: %(default)s; "nginx" on RHEL/Arch)')
+parser.add_argument('--nginx-user', help='user nginx workers run as (default: www-data; "nginx" on RHEL/Arch). On --upgrade the installed socket unit\'s owner is kept unless given.')
 parser.add_argument('--binary', type=Path, help='release executable (default: krb-jwt-issuer next to deploy/)')
 parser.add_argument('--sha256', help='expected SHA-256 of the executable, from the verified SHA256SUMS')
 parser.add_argument('--pihole-ip', help='also add a Pi-hole local DNS record host -> this address')
@@ -57,6 +57,20 @@ release = Path(__file__).resolve().parents[1]
 binary = args.binary or release / 'krb-jwt-issuer'
 backup = Path('/root') / ('krb-jwt-issuer-before-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 undo = []  # callables that revert this run's changes, newest first
+
+
+def installed_socket_user():
+    try:
+        for line in Path('/etc/systemd/system/krb-jwt-issuer.socket').read_text().splitlines():
+            if line.startswith('SocketUser='):
+                return line.split('=', 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+if not args.nginx_user:
+    args.nginx_user = (installed_socket_user() if args.upgrade else None) or 'www-data'
 
 
 def preflight():
@@ -115,7 +129,10 @@ def install(source, dest, mode=0o644, owner=('root', 'root')):
 
     def revert():
         if saved:
-            shutil.copy2(saved, dest)
+            # Never write into the file in place: a running executable cannot be
+            # opened for writing (ETXTBSY). Stage a copy and rename over it.
+            shutil.copy2(saved, staging)
+            os.replace(staging, dest)
         else:
             dest.unlink(missing_ok=True)
     undo.append(revert)
@@ -183,6 +200,8 @@ def fresh_install():
     run(['systemctl', 'daemon-reload'])
     run(['systemctl', 'enable', '--now', 'krb-jwt-issuer.socket'])
     undo.append(lambda: run(['systemctl', 'disable', '--now', 'krb-jwt-issuer.socket'], check=False))
+    if subprocess.run(['systemctl', 'is-active', '--quiet', 'krb-jwt-issuer.socket']).returncode:
+        raise RuntimeError('the socket unit did not start; see: systemctl status krb-jwt-issuer.socket')
     run(['systemctl', 'reload', 'nginx'])
 
 
@@ -217,8 +236,6 @@ preflight()
 backup.mkdir(mode=0o700)
 try:
     upgrade() if args.upgrade else fresh_install()
-    if args.pihole_ip:
-        add_pihole_record()
 except BaseException as error:
     print('\nFAILED: %s\nRolling back this run\'s changes...' % error, file=sys.stderr)
     for revert in reversed(undo):
@@ -229,13 +246,25 @@ except BaseException as error:
     run(['systemctl', 'daemon-reload'], check=False)
     run(['systemctl', 'restart', 'krb-jwt-issuer.service'], check=False) if args.upgrade else None
     print('Originals are kept in %s. Fix the problem and run again.' % backup, file=sys.stderr)
+    if not args.upgrade:
+        print('Left in place on purpose: the %s account, %s (including any signing key; a re-run reuses it)\n'
+              'and the HTTP/%s principal in the KDC (only the exported keytab was removed).' % (SERVICE_USER, STATE_DIR, args.host), file=sys.stderr)
     sys.exit(1)
 
-print('\nDone. Backups: %s' % backup)
+if args.pihole_ip:
+    try:
+        add_pihole_record()
+    except BaseException as problem:  # the issuer itself is installed and working
+        print('WARNING: installed, but the Pi-hole DNS record was not added: %s\nAdd it by hand: %s %s' % (problem, args.pihole_ip, args.host), file=sys.stderr)
+
+print('\nInstalled. Backups: %s' % backup)
 host = args.host
 if not host:
     host = json.loads(CONFIG_DEST.read_text())['issuer'].split('/')[2]
 url = 'https://%s/issuer' % host
 public = run([str(BINARY_DEST), 'check', '-url', url, '-public-only'], check=False)
+if public.returncode:
+    print('\nWARNING: the public check failed. If this host cannot resolve or trust %s that is expected;\n'
+          'otherwise look at: systemctl status krb-jwt-issuer.socket krb-jwt-issuer.service; nginx -t' % host, file=sys.stderr)
 print('\nNext, from a machine that resolves %s and has a Kerberos ticket (kinit first):' % host)
 print('  krb-jwt-issuer check -url %s -audience %s' % (url, args.audience))

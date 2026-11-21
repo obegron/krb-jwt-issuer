@@ -100,10 +100,11 @@ jobs:
         run: |
           set -euo pipefail
           # Re-run safety: a previous failed run may have left an unpublished draft.
+          # Drafts are hidden from lookup by tag, so find them through the REST list.
           # Published (immutable) releases are never touched.
-          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = "true" ]; then
-            gh release delete "$TAG" --yes
-          fi
+          for id in $(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == env.TAG and .draft) | .id'); do
+            gh api -X DELETE "repos/$GH_REPO/releases/$id"
+          done
           flags=(--verify-tag --generate-notes)
           case "$TAG" in *-*) flags+=(--prerelease) ;; esac
           gh release create "$TAG" --draft "${flags[@]}" assets/*

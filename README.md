@@ -59,7 +59,7 @@ It tests what the README promises, from the outside, and prints a specific fix f
 - a minted token **verifies against the published keys** with the right `iss`, `aud` and lifetime (tokens are never printed);
 - unconfigured audiences, foreign origins and requests without `X-Token-Request` are refused.
 
-Exit status is 0 when healthy, 1 when a check fails, and 2 for a usage error. Use `-principal user@REALM` to assert who you expect to be, `-cacert ca.pem` for a private certificate authority, and `-public-only` on a machine without a ticket, such as the host that will verify tokens, to confirm it can reach discovery and the keys. The check mints one token, so it stays well inside the rate limit.
+Exit status is 0 when healthy, 1 when a check fails, and 2 for a usage error. Use `-principal user@REALM` to assert who you expect to be, `-cacert ca.pem` for a private certificate authority, and `-public-only` on a machine without a ticket, such as the host that will verify tokens, to confirm it can reach discovery and the keys. The check mints one token, so it stays well inside the rate limit. (The issuer's rate limit is in memory, per process, and resets when the service restarts; nginx's limit covers the gap.)
 
 ## Mint your first token
 
@@ -231,7 +231,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
   -o krb-jwt-issuer .
 ```
 
-Installation from a release. Download the archive for your architecture from the Releases page, verify it, then install (see [RELEASING.md](RELEASING.md) for the verification commands):
+Installation from a release. Prerequisites: Kerberos with a KDC, and nginx with a SPNEGO (`auth_gss`) module, already working. By default the installer must run on the KDC host (it uses `kadmin.local`); otherwise pass `--keytab`, and use `--nginx-user` if nginx does not run as `www-data`. Download the archive for your architecture from the Releases page, verify it, then install (see [RELEASING.md](RELEASING.md) for the verification commands):
 
 ```bash
 gh attestation verify krb-jwt-issuer-vX.Y.Z-linux-armv7.tar.gz -R obegron/krb-jwt-issuer

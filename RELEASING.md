@@ -14,7 +14,8 @@ One-time repository settings (GitHub → Settings):
 
 Cutting a release:
 
-1. Merge to `main` with CI green. Update upgrade notes in the README if needed.
+1. Merge to `main` with CI green. Tag a commit that CI has run on (normally the
+   tip of `main`): the workflow refuses a commit without a successful CI run. Update upgrade notes in the README if needed.
 2. Rehearse with a pre-release tag: `git tag -s v0.1.0-rc1 && git push origin v0.1.0-rc1`.
    Immutable tags can never be reused, so never skip the rehearsal for a new pipeline.
 3. Tag the real release the same way. The workflow tests, builds three
