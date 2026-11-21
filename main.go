@@ -189,20 +189,23 @@ func createKey(path string) (*rsa.PrivateKey, error) {
 		return nil, err
 	}
 	if err := os.Link(tmp, path); err != nil { // fails if path already exists
-		return nil, err
+		if errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		// Filesystem without hard links: rename is still atomic, and we know the
+		// path did not exist when we started.
+		if _, statErr := os.Lstat(path); statErr == nil {
+			return nil, os.ErrExist
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return nil, err
+		}
 	}
 	if d, err := os.Open(dir); err == nil { // persist the directory entry
 		_ = d.Sync()
 		d.Close()
 	}
 	return key, nil
-}
-
-func loadOrCreateKey(path string) (*rsa.PrivateKey, error) {
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return createKey(path)
-	}
-	return loadKey(path)
 }
 
 // limiter is a per-subject token bucket. Keys are only subjects that already
@@ -310,6 +313,13 @@ func newIssuer(c config, key *rsa.PrivateKey) (*issuer, error) {
 	return i, nil
 }
 
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -333,6 +343,13 @@ func publicJSON(body []byte) http.HandlerFunc {
 	}
 }
 
+// reject logs a denied request, then answers it. Only the stable error code and
+// the already-authenticated subject are logged, never request bodies or tokens.
+func (i *issuer) reject(w http.ResponseWriter, r *http.Request, status int, code string, attrs ...any) {
+	slog.Warn("request denied", append([]any{"code", code, "status", status, "method", r.Method, "path", r.URL.Path}, attrs...)...)
+	failure(w, status, code)
+}
+
 func (i *issuer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -348,6 +365,10 @@ func (i *issuer) handler() http.Handler {
 		})
 	}
 	mux.HandleFunc("POST "+i.prefix+"/mint", i.mint)
+	mux.HandleFunc(i.prefix+"/mint", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", "POST")
+		failure(w, 405, "method_not_allowed")
+	})
 	mux.HandleFunc("GET "+i.prefix+"/whoami", func(w http.ResponseWriter, r *http.Request) {
 		subject, ok := i.subject(w, r)
 		if ok {
@@ -361,12 +382,12 @@ func (i *issuer) handler() http.Handler {
 func (i *issuer) subject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	values := r.Header.Values(identityHeader)
 	if len(values) != 1 || values[0] == "" {
-		failure(w, 401, "authentication_required")
+		i.reject(w, r, 401, "authentication_required", "identity_headers", len(values))
 		return "", false
 	}
 	subject := values[0]
 	if _, ok := i.config.Subjects[subject]; !ok {
-		failure(w, 403, "subject_not_allowed")
+		i.reject(w, r, 403, "subject_not_allowed", "subject", truncate(subject, 80))
 		return "", false
 	}
 	return subject, true
@@ -406,20 +427,20 @@ func (i *issuer) mint(w http.ResponseWriter, r *http.Request) {
 	}
 	// JSON plus a non-simple header prevent cross-origin form/fetch token issuance.
 	if origin := r.Header.Get("Origin"); origin != "" && origin != i.origin {
-		failure(w, 403, "origin_not_allowed")
+		i.reject(w, r, 403, "origin_not_allowed", "subject", subject)
 		return
 	}
 	if r.Header.Get(requestHeader) != "1" {
-		failure(w, 400, "X-Token-Request_header_required")
+		i.reject(w, r, 400, "X-Token-Request_header_required", "subject", subject)
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		failure(w, 415, "application_json_required")
+		i.reject(w, r, 415, "application_json_required", "subject", subject)
 		return
 	}
 	if r.URL.RawQuery != "" {
-		failure(w, 400, "query_parameters_not_allowed")
+		i.reject(w, r, 400, "query_parameters_not_allowed", "subject", subject)
 		return
 	}
 	var request struct {
@@ -428,28 +449,28 @@ func (i *issuer) mint(w http.ResponseWriter, r *http.Request) {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&request); err != nil {
-		failure(w, 400, "invalid_request")
+		i.reject(w, r, 400, "invalid_request", "subject", subject)
 		return
 	}
 	if err := d.Decode(new(any)); err != io.EOF {
-		failure(w, 400, "invalid_request")
+		i.reject(w, r, 400, "invalid_request", "subject", subject)
 		return
 	}
 	if !slices.Contains(i.config.Subjects[subject], request.Audience) {
-		failure(w, 403, "audience_not_allowed")
+		i.reject(w, r, 403, "audience_not_allowed", "subject", subject, "audience", truncate(request.Audience, 80))
 		return
 	}
 	now := i.now()
 	if ok, wait := i.limit.allow(subject, now); !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
-		failure(w, 429, "rate_limited")
+		i.reject(w, r, 429, "rate_limited", "subject", subject)
 		return
 	}
 	issued := now.UTC().Truncate(time.Second)
 	expires := issued.Add(time.Duration(i.config.TokenLifetimeSeconds) * time.Second)
 	jti := make([]byte, 16)
 	if _, err := rand.Read(jti); err != nil {
-		failure(w, 500, "token_generation_failed")
+		i.reject(w, r, 500, "token_generation_failed", "subject", subject)
 		return
 	}
 	claims := tokenClaims{
@@ -459,7 +480,7 @@ func (i *issuer) mint(w http.ResponseWriter, r *http.Request) {
 	}
 	signed, err := i.sign(claims)
 	if err != nil {
-		failure(w, 500, "token_generation_failed")
+		i.reject(w, r, 500, "token_generation_failed", "subject", subject)
 		return
 	}
 	slog.Info("token minted", "subject", subject, "audience", request.Audience, "jti", claims.ID, "expires", expires)
@@ -498,6 +519,7 @@ func main() {
 	configPath := flag.String("config", "/etc/krb-jwt-issuer/config.json", "configuration path")
 	socketPath := flag.String("socket", "", "Unix socket for local development; production uses systemd")
 	printPublic := flag.Bool("print-public-key", false, "print the active RSA public key as PEM and exit")
+	initKey := flag.Bool("init-key", false, "create the signing key (refuses to replace an existing one) and exit; run as the service user")
 	showVersion := flag.Bool("version", false, "print the version and exit (see also: \"check\" subcommand)")
 	flag.Parse()
 	if *showVersion {
@@ -509,14 +531,18 @@ func main() {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
-	var key *rsa.PrivateKey
-	if *printPublic {
-		key, err = loadKey(c.PrivateKeyFile) // read-only: never generate a key as the wrong user
-	} else {
-		key, err = loadOrCreateKey(c.PrivateKeyFile)
+	if *initKey {
+		created, err := createKey(c.PrivateKeyFile) // refuses to replace an existing key
+		if err != nil {
+			slog.Error("cannot create signing key", "error", err)
+			os.Exit(1)
+		}
+		fmt.Println("created signing key", jwkFor(&created.PublicKey).Kid)
+		return
 	}
+	key, err := loadKey(c.PrivateKeyFile)
 	if err != nil {
-		slog.Error("cannot load signing key", "error", err)
+		slog.Error("cannot load signing key; create one first with -init-key, run as the service user", "error", err, "path", c.PrivateKeyFile)
 		os.Exit(1)
 	}
 	if *printPublic {

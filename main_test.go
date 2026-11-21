@@ -174,11 +174,11 @@ func TestDiscoveryDoesNotClaimUnsupportedFlows(t *testing.T) {
 
 func TestKeyPersistsAndRotationRetainsPublicKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "signing.key.pem")
-	key, err := loadOrCreateKey(path)
+	key, err := createKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := loadOrCreateKey(path)
+	loaded, err := loadKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestKeyPersistsAndRotationRetainsPublicKeys(t *testing.T) {
 	if err := os.Chmod(path, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOrCreateKey(path); err == nil {
+	if _, err := loadKey(path); err == nil {
 		t.Fatal("world-readable signing key accepted")
 	}
 }

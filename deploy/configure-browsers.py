@@ -11,7 +11,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--host', required=True, help='issuer hostname, e.g. auth.example.com')
 parser.add_argument('--hosts-ip', help='also add an /etc/hosts entry host -> this address')
 args = parser.parse_args()
-assert os.geteuid() == 0
+if os.geteuid() != 0:
+    raise SystemExit('error: run as root (pkexec or sudo)')
 backup = Path('/root') / ('krb-jwt-issuer-client-before-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 backup.mkdir(mode=0o700)
 
@@ -26,7 +27,7 @@ def write(path, data):
     path.chmod(0o644)
 
 firefox = Path('/etc/firefox/policies/policies.json')
-data = json.loads(firefox.read_text())
+data = json.loads(firefox.read_text()) if firefox.exists() else {}
 trusted = data.setdefault('policies', {}).setdefault('Authentication', {}).setdefault('SPNEGO', [])
 site = 'https://' + args.host
 if site not in trusted:
@@ -34,7 +35,7 @@ if site not in trusted:
 write(firefox, json.dumps(data, indent=2)+'\n')
 
 brave = Path('/etc/brave/policies/managed/kerberos.json')
-data = json.loads(brave.read_text())
+data = json.loads(brave.read_text()) if brave.exists() else {}
 trusted = [name.strip() for name in data.get('AuthServerAllowlist','').split(',') if name.strip()]
 if args.host not in trusted:
     trusted.append(args.host)

@@ -322,8 +322,9 @@ func (k *checker) protectedChecks(keys []publicJWK) {
 	}
 	k.report("PASS", "audience configured", k.audience, "")
 
+	real := who.Subject
 	resp, err = k.get("/whoami", true, spoof)
-	if err == nil && resp.status == 200 && json.Unmarshal(resp.body, &who) == nil && !strings.HasPrefix(who.Subject, "mallory") {
+	if err == nil && resp.status == 200 && json.Unmarshal(resp.body, &who) == nil && who.Subject == real {
 		k.report("PASS", "nginx overwrites identity header", "forged header replaced by the Kerberos principal", "")
 	} else {
 		k.report("FAIL", "nginx overwrites identity header", "a client-supplied identity was honoured or the request failed", "use `proxy_set_header X-Authenticated-Principal $remote_user;` in every authenticated location")
@@ -392,6 +393,9 @@ func runCheck(args []string, out io.Writer, client checkClient) int {
 	fmt.Fprintf(out, "\n%d passed, %d failed, %d warnings, %d skipped\n", k.pass, k.fail, k.warn, k.skp)
 	if k.fail > 0 {
 		return 1
+	}
+	if *publicOnly {
+		fmt.Fprintln(out, "Only public endpoints were checked; Kerberos, authorization and token issuing were NOT tested.")
 	}
 	return 0
 }

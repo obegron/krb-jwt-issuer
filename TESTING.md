@@ -26,9 +26,9 @@ are covered only by the deployed integration run.
 | REQ-CFG-2 | Config file is strict: unknown fields, trailing data, wrong types, oversize input are rejected. Shipped `config.example.json` is valid. | `TestREQ_CFG_2_ReadConfigStrict` |
 | REQ-KEY-1 | Key rotation: old tokens verify after rotation, new tokens use a new `kid`, active key listed first, duplicates collapse. | `TestREQ_KEY_1_RotationOverlapVerifiesOldTokens`, `TestKeyPersistsAndRotationRetainsPublicKeys` |
 | REQ-KEY-2 | Bad previous-key files (private key, non-PEM, garbage DER, wrong PEM type, <2048-bit) abort startup. Non-`.pem` files and a missing directory are ignored. | `TestREQ_KEY_2_PreviousKeyValidation` |
-| REQ-KEY-3 | Signing key load is fail-closed: garbage, empty, weak, symlink, directory, group/other-readable are refused and never overwritten. PKCS#1 and PKCS#8 accepted. | `TestREQ_KEY_3_KeyLoadingFailsClosed` |
+| REQ-KEY-3 | Startup never creates a key; a missing or bad key stops the service. Signing key load is fail-closed: garbage, empty, weak, symlink, directory, group/other-readable are refused and never overwritten. PKCS#1 and PKCS#8 accepted. | `TestREQ_KEY_3_KeyLoadingFailsClosed` |
 | REQ-KEY-5 | Key creation is atomic (temp file, sync, hard link), never replaces an existing key, cleans up stale temp files; read-only loading (`-print-public-key`) never creates a key. | `TestREQ_KEY_5_AtomicCreationAndReadOnlyLoad` |
-| REQ-KEY-4 | First start generates a 3072-bit PKCS#8 key, file 0600, directory 0700. Key is reused on restart. | `TestREQ_KEY_4_GeneratedKeyProperties`, `TestKeyPersistsAndRotationRetainsPublicKeys` |
+| REQ-KEY-4 | `-init-key` generates a 3072-bit PKCS#8 key, file 0600, directory 0700. Key is reused on restart. | `TestREQ_KEY_4_GeneratedKeyProperties`, `TestKeyPersistsAndRotationRetainsPublicKeys` |
 | REQ-JWK-1 | `kid` equals the RFC 7638 thumbprint (checked against the RFC's published vector). | `TestREQ_JWK_1_ThumbprintMatchesRFC7638Vector` |
 | REQ-JWK-2 | JWKS contains complete public members and no private RSA members. | `TestREQ_JWK_2_JWKSPublicOnly`, `TestMintAndVerifyWithPublishedKey` |
 | REQ-DISC-1 | Discovery `issuer` equals the config byte for byte, `jwks_uri` is served by the same handler, only RS256 advertised, no OAuth endpoints, and issuers with no path or a deep path work. | `TestREQ_DISC_1_DiscoveryConsistency`, `TestDiscoveryDoesNotClaimUnsupportedFlows` |
@@ -46,6 +46,8 @@ are covered only by the deployed integration run.
 | REQ-RATE-1 | Per-principal token bucket: burst 10, 0.5/s refill, 429 + `Retry-After`, isolation, idle cap, rejected requests consume nothing. | `TestREQ_RATE_1_MintRateLimit` |
 | REQ-NET-1 | Listener is Unix-only, mode 0600, and serves real HTTP. | `TestREQ_NET_1_UnixSocketOnly` |
 | REQ-OBS-1 | Mint log entries identify subject, audience and jti, and never contain the JWT, its signature, or key material. | `TestREQ_OBS_1_LogsContainNoSecrets` |
+| REQ-OBS-2 | Denials (401/403/429 and malformed requests) are logged at WARN with a code and a bounded subject, never bodies or tokens. | `TestREQ_OBS_2_DenialsAreLogged` |
+| REQ-HTTP-6 | Wrong method on `/mint` is 405 with `Allow: POST`. | `TestREQ_HTTP_6_MintMethodNotAllowed` |
 | REQ-ROB-1 | The mint decoder never panics, never returns 5xx, and never mints unless the body is valid JSON for the permitted audience. | `FuzzMintBody` |
 | REQ-ROB-2 | Malformed, duplicate or smuggled identity headers never mint. | `TestREQ_ROB_2_IdentityHeaderValues` |
 

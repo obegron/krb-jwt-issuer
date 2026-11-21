@@ -579,15 +579,15 @@ func TestREQ_KEY_3_KeyLoadingFailsClosed(t *testing.T) {
 		}
 		return p
 	}
-	if _, err := loadOrCreateKey(write("garbage.pem", []byte("not a key"), 0600)); err == nil {
+	if _, err := loadKey(write("garbage.pem", []byte("not a key"), 0600)); err == nil {
 		t.Error("garbage key accepted")
 	}
-	if _, err := loadOrCreateKey(write("empty.pem", nil, 0600)); err == nil {
+	if _, err := loadKey(write("empty.pem", nil, 0600)); err == nil {
 		t.Error("empty key file silently replaced or accepted")
 	}
 	weak, _ := rsa.GenerateKey(rand.Reader, 1024)
 	der, _ := x509.MarshalPKCS8PrivateKey(weak)
-	if _, err := loadOrCreateKey(write("weak.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600)); err == nil {
+	if _, err := loadKey(write("weak.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600)); err == nil {
 		t.Error("1024-bit key accepted")
 	}
 	target := write("target.pem", []byte("x"), 0600)
@@ -595,10 +595,10 @@ func TestREQ_KEY_3_KeyLoadingFailsClosed(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOrCreateKey(link); err == nil {
+	if _, err := loadKey(link); err == nil {
 		t.Error("symlinked key accepted")
 	}
-	if _, err := loadOrCreateKey(dir); err == nil {
+	if _, err := loadKey(dir); err == nil {
 		t.Error("directory accepted as key")
 	}
 	// Group-readable and other-readable are both refused.
@@ -610,19 +610,19 @@ func TestREQ_KEY_3_KeyLoadingFailsClosed(t *testing.T) {
 		if err := os.Chmod(p, mode); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadOrCreateKey(p); err == nil {
+		if _, err := loadKey(p); err == nil {
 			t.Errorf("mode %o accepted", mode)
 		}
 	}
 	// A rejected key must be left intact, never overwritten.
 	p := write("keep.pem", []byte("precious"), 0644)
-	_, _ = loadOrCreateKey(p)
+	_, _ = loadKey(p)
 	if b, _ := os.ReadFile(p); string(b) != "precious" {
 		t.Error("rejected key file was modified")
 	}
 	// PKCS#1 keys are accepted as well as PKCS#8, and 0400 is allowed.
 	p1 := write("pkcs1.pem", pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0400)
-	if loaded, err := loadOrCreateKey(p1); err != nil || loaded.N.Cmp(k.N) != 0 {
+	if loaded, err := loadKey(p1); err != nil || loaded.N.Cmp(k.N) != 0 {
 		t.Errorf("pkcs1 key: %v", err)
 	}
 }
@@ -644,7 +644,7 @@ func TestREQ_KEY_5_AtomicCreationAndReadOnlyLoad(t *testing.T) {
 	if err := os.WriteFile(path+".tmp", []byte("half-written"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	k, err := loadOrCreateKey(path)
+	k, err := createKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +675,7 @@ func TestREQ_KEY_4_GeneratedKeyProperties(t *testing.T) {
 		t.Skip("3072-bit generation")
 	}
 	path := filepath.Join(t.TempDir(), "nested", "state", "signing.key.pem")
-	k, err := loadOrCreateKey(path)
+	k, err := createKey(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,6 +823,42 @@ func TestREQ_NET_1_UnixSocketOnly(t *testing.T) {
 	n, _ := conn.Read(buf)
 	if !strings.HasPrefix(string(buf[:n]), "HTTP/1.1 200") || !strings.Contains(string(buf[:n]), `"keys"`) {
 		t.Errorf("unexpected response: %q", buf[:n])
+	}
+}
+
+// REQ-OBS-2: denials are logged (so probing and misconfiguration are visible)
+// with a stable code and the subject, but never with the request body or token.
+func TestREQ_OBS_2_DenialsAreLogged(t *testing.T) {
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+	i := fixture(t)
+	request(i, "POST", "/issuer/mint", `{"audience":"secret-audience-name"}`, "alice@EXAMPLE")
+	request(i, "GET", "/issuer/whoami", "", "mallory@EXAMPLE")
+	request(i, "GET", "/issuer/whoami", "", "")
+	out := buf.String()
+	for _, want := range []string{"audience_not_allowed", "subject_not_allowed", "authentication_required", "level=WARN", "mallory@EXAMPLE"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	long := strings.Repeat("x", 500) + "@EXAMPLE"
+	buf.Reset()
+	request(i, "GET", "/issuer/whoami", "", long)
+	if strings.Contains(buf.String(), long) {
+		t.Error("unbounded attacker-controlled value logged")
+	}
+}
+
+// REQ-HTTP-6: a wrong method on /mint is 405 with an Allow header.
+func TestREQ_HTTP_6_MintMethodNotAllowed(t *testing.T) {
+	i := fixture(t)
+	for _, m := range []string{"GET", "PUT", "DELETE"} {
+		w := request(i, m, "/issuer/mint", "", "alice@EXAMPLE")
+		if w.Code != 405 || w.Header().Get("Allow") != "POST" {
+			t.Errorf("%s: %d %v", m, w.Code, w.Header())
+		}
 	}
 }
 

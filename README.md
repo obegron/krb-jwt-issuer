@@ -18,7 +18,8 @@ Tested on **Linux only** (amd64, arm64 and ARMv7, the Raspberry Pi it was built 
 - No third-party runtime dependencies: RS256 signing uses the Go standard library. `golang-jwt` is used only by the tests, as an independent verifier.
 - A persistent 3072-bit RSA signing key, using RS256 signatures.
 - A separate unprivileged `krb-jwt-issuer` account, with no Kerberos keytab access.
-- A systemd-owned Unix socket readable only by nginx's `www-data` user.
+- A systemd-owned Unix socket readable only by nginx's worker user (`www-data` by default; `--nginx-user` to change).
+- A hardened unit: syscall filter, no namespaces, private `/proc`, no network, no capabilities (`systemd-analyze security` rates it 0.6 SAFE).
 - No TCP listener, database, containers, or external identity service.
 
 The first deployment used about **6.1 MiB resident memory** after end-to-end tests (measured before the dependency removal and rate limiter; re-measure). The static executable is about 7 MiB. The unit sets `GOMEMLIMIT=48MiB` and `MemoryMax=96M`. Public documents are encoded once at startup, and the rate limiter holds one small entry per authorized principal.
@@ -78,7 +79,7 @@ The response contains `access_token`, `token_type: "Bearer"`, and `expires_in: 6
 
 The mint endpoint is a custom federation API, not the standard OAuth token endpoint. `X-Token-Request: 1`, JSON content type, and origin validation prevent cross-origin forms and ordinary cross-origin fetches from causing minting. Minting is rate-limited twice. The issuer allows each authorized principal a sustained 30 tokens per minute with bursts of 10, returning `429` with `Retry-After`. nginx additionally limits requests that carry a Negotiate token to the same rate per client IP; the unauthenticated 401 challenge round trip is deliberately not counted, because `limit_req` runs before authentication.
 
-The example configuration allows one principal and one test audience, `homelab-test`. Enrol real applications by adding explicit audiences.
+The example configuration allows one principal and one placeholder audience, `homelab-test`, which is just a name for the first receiving service (use your app's own name, such as `notes-api`). Enrol real applications by adding explicit audiences.
 
 ## How the trust chain works
 
@@ -158,7 +159,7 @@ To add an audience or a principal, edit `subjects` (for example add `notes-api`)
 | `/etc/nginx/conf.d/krb-jwt-issuer.conf` | HTTPS, Kerberos, public metadata exceptions, and proxy configuration |
 | `/etc/nginx/krb5-auth.keytab` | nginx's separate HTTP service key, root:www-data, mode 0640 |
 
-The key is generated on first startup and reused thereafter. Creation is atomic: the key is fully written and synced to a temporary file and then hard-linked into place, so a crash cannot leave a truncated key, and an existing key is never replaced. A malformed or overly permissive existing key causes startup to fail. The service has a private network namespace and no writable access to the nginx configuration or its Kerberos keytabs.
+The signing key is created once by `install.py`, or by hand with `krb-jwt-issuer -config /etc/krb-jwt-issuer/config.json -init-key` run as the service user. The service itself **never creates a key**: a missing key stops it with a clear error rather than silently minting tokens nobody can verify. Creation is atomic: the key is fully written and synced to a temporary file and then hard-linked (or renamed) into place, so a crash cannot leave a truncated key, and `-init-key` refuses to replace an existing one. A malformed or overly permissive existing key causes startup to fail.
 
 Consumers and desktops must resolve the hostname to the Pi (for example a Pi-hole `dns.hosts` record or `/etc/hosts`). Browsers need the hostname in their Kerberos allowlists; `deploy/configure-browsers.py --host auth.example.com` adds it to Firefox and Brave policies. The TLS certificate must cover the hostname. No router forwarding or extra TCP port is needed.
 
@@ -181,7 +182,8 @@ The socket unit is enabled for boot; the service starts through socket activatio
 | 403 | Unauthorized subject, audience, or browser origin |
 | 400 | Malformed JSON, unknown claim field, or missing `X-Token-Request` header |
 | 415 | Content type is not JSON |
-| 429 | nginx mint rate limit reached; wait before retrying |
+| 429 | Mint rate limit reached (issuer: per principal; nginx: per client IP); wait before retrying |
+| 405 | Wrong HTTP method (mint is `POST` only) |
 | 502 | Check the issuer service and socket permissions |
 
 If a browser cannot open the identity endpoint, inspect `about:policies` in Firefox or `brave://policy` in Brave. Policies may refresh while running; otherwise restart the browser. If `klist` shows no valid TGT, run `kinit alice@EXAMPLE.COM` or log in again.
@@ -194,8 +196,8 @@ Rotation uses an overlap period: mint with the new private key while publishing 
 
 1. Stop both `krb-jwt-issuer.socket` and `krb-jwt-issuer.service` so incoming requests cannot reactivate the old process during maintenance.
 2. Export the current **public** key with the binary's `-print-public-key` option and save it as a `.pem` file under `previous-public-keys`. Run the binary as `krb-jwt-issuer` using the live config. This option prints public material only.
-3. Move the old private key to a protected backup outside that public-key directory. Leave the active key path absent.
-4. Start the socket and service. Startup generates a new private key, while the previous public key remains in JWKS.
+3. Move the old private key to a protected backup outside that public-key directory.
+4. Create the new key as the service user (`sudo -u krb-jwt-issuer /usr/local/libexec/krb-jwt-issuer -config /etc/krb-jwt-issuer/config.json -init-key`), then start the socket and service. The previous public key remains in JWKS.
 5. Confirm a new `kid` and verify tokens against the published keys. Keep the previous public key at least through the old token lifetime plus consumer cache and clock-skew allowances; an hour is a practical initial overlap for this ten-minute setup.
 6. Remove the old public key from the published directory after that overlap and restart the service. Retain or destroy the backed-up private key according to your recovery needs.
 
@@ -239,7 +241,12 @@ sudo python3 deploy/install.py --host auth.example.com --realm EXAMPLE.COM \
   --sha256 <digest from the verified SHA256SUMS> [--pihole-ip 192.0.2.10]
 ```
 
-`install.py` intentionally rejects an existing deployment and needs `kadmin.local` access to create the `HTTP/<host>` service key. For updates, stop the service and socket, install the new verified executable atomically while retaining the old binary for rollback, then restart. Keep `/var/lib/krb-jwt-issuer/` intact to preserve the signing key. **When upgrading from a version whose nginx config contained `auth_gss_authorized_principal`, replace `/etc/nginx/conf.d/krb-jwt-issuer.conf` with the current template** and reload nginx, so authorization lives only in the issuer config.
+`install.py` runs all of its pre-flight checks before changing anything (executable checksum, nginx and systemd present, certificate files exist, nginx user exists), creates the signing key, and rolls back its own changes if a later step fails. Notes:
+
+- It creates the nginx service key with `kadmin.local`, so by default it must run on the KDC host. If your KDC is elsewhere, create the `HTTP/<host>` keytab there and pass it with `--keytab FILE`.
+- Pass `--nginx-user nginx` on distributions where nginx does not run as `www-data` (RHEL, Arch). Use the same option when upgrading.
+- It refuses to touch an existing deployment. To upgrade, run `sudo python3 deploy/install.py --upgrade` from the new, verified release: it replaces the executable (keeping a backup under `/root/krb-jwt-issuer-before-<timestamp>/`) and the systemd units, restarts the service, and restores the old executable if the new one does not start. It keeps your config, signing key and keytab. Add `--host H --cert-dir D` to also re-render the nginx config from the template; do that when upgrading from a version whose nginx config contained `auth_gss_authorized_principal`, so authorization lives only in the issuer config.
+- When it finishes it runs the public part of the self-check. The full check (Kerberos, authorization, token issuing) needs a machine that resolves the hostname and has a ticket, so run the command it prints from your desktop.
 
 The integration runner uses your current Kerberos session and keeps bearer tokens in memory. It reads the deployment from the environment; `RESTART_CMD` is optional and enables the restart-persistence check:
 
