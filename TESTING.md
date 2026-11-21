@@ -49,6 +49,17 @@ are covered only by the deployed integration run.
 | REQ-ROB-1 | The mint decoder never panics, never returns 5xx, and never mints unless the body is valid JSON for the permitted audience. | `FuzzMintBody` |
 | REQ-ROB-2 | Malformed, duplicate or smuggled identity headers never mint. | `TestREQ_ROB_2_IdentityHeaderValues` |
 
+## Self-check (`krb-jwt-issuer check`)
+
+The operator-facing check in `check.go` is itself tested in `check_test.go`
+against a fake nginx that can reproduce each misconfiguration: no Kerberos
+requirement, trusting a client identity header, failing to overwrite it, broken
+login, an unauthorized principal, an issuer URL mismatch and an unreachable host.
+A healthy deployment must pass with no warnings, and every broken variant must
+fail with a fix hint. Consumer-side token verification is tested against
+tampering, unknown `kid`, wrong audience or issuer, expiry and not-yet-valid.
+The live equivalent, run by users, is documented in the README.
+
 ## Not covered by unit tests (needs the deployed stack)
 
 These are verified by `integration/` against the live Pi and are manual or

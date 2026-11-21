@@ -492,10 +492,13 @@ func listener(socketPath string) (net.Listener, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "check" {
+		os.Exit(runCheck(os.Args[2:], os.Stdout, nil))
+	}
 	configPath := flag.String("config", "/etc/krb-jwt-issuer/config.json", "configuration path")
 	socketPath := flag.String("socket", "", "Unix socket for local development; production uses systemd")
 	printPublic := flag.Bool("print-public-key", false, "print the active RSA public key as PEM and exit")
-	showVersion := flag.Bool("version", false, "print the version and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit (see also: \"check\" subcommand)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)

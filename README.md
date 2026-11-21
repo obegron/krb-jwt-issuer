@@ -42,6 +42,24 @@ Example links:
 
 There is also a `/healthz` endpoint inside the Unix-socket service. nginx does not expose it.
 
+## Check your setup
+
+After installing, run the built-in self-check from a desktop that has a Kerberos ticket (`kinit` first). It needs only this binary and a `curl` built with GSS-API (`curl -V` should list `GSS-API` and `SPNEGO`):
+
+```bash
+krb-jwt-issuer check -url https://auth.example.com/issuer -audience homelab-test
+```
+
+It tests what the README promises, from the outside, and prints a specific fix for anything wrong:
+
+- discovery and public keys work without Kerberos, the issuer URL matches exactly, and no private key material is published;
+- nginx rejects anonymous requests and **ignores or overwrites a forged `X-Authenticated-Principal` header** (the most important misconfiguration to catch);
+- your principal is authorized for the audience;
+- a minted token **verifies against the published keys** with the right `iss`, `aud` and lifetime (tokens are never printed);
+- unconfigured audiences, foreign origins and requests without `X-Token-Request` are refused.
+
+Exit status is 0 when healthy, 1 when a check fails, and 2 for a usage error. Use `-principal user@REALM` to assert who you expect to be, `-cacert ca.pem` for a private certificate authority, and `-public-only` on a machine without a ticket, such as the host that will verify tokens, to confirm it can reach discovery and the keys. The check mints one token, so it stays well inside the rate limit.
+
 ## Mint your first token
 
 Run this as your normal desktop user, with valid Kerberos tickets:
