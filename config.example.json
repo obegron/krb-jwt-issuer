@@ -1,0 +1,9 @@
+{
+  "issuer": "https://auth.example.com/issuer",
+  "private_key_file": "/var/lib/krb-jwt-issuer/signing.key.pem",
+  "previous_public_keys_dir": "/var/lib/krb-jwt-issuer/previous-public-keys",
+  "token_lifetime_seconds": 600,
+  "subjects": {
+    "alice@EXAMPLE.COM": ["homelab-test"]
+  }
+}

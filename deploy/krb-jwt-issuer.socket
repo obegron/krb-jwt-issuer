@@ -1,0 +1,12 @@
+[Unit]
+Description=Kerberos JWT issuer socket
+
+[Socket]
+ListenStream=/run/krb-jwt-issuer.sock
+SocketUser=www-data
+SocketGroup=www-data
+SocketMode=0600
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

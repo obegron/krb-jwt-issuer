@@ -1,0 +1,32 @@
+[Unit]
+Description=Kerberos JWT issuer
+Requires=krb-jwt-issuer.socket
+After=krb-jwt-issuer.socket
+
+[Service]
+User=krb-jwt-issuer
+Group=krb-jwt-issuer
+ExecStart=/usr/local/libexec/krb-jwt-issuer -config /etc/krb-jwt-issuer/config.json
+StateDirectory=krb-jwt-issuer
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+LimitNOFILE=256
+Environment=GOMEMLIMIT=48MiB
+MemoryMax=96M
+TasksMax=32

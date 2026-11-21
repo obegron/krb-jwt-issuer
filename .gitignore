@@ -1,0 +1,5 @@
+/dist/
+/state/
+*.key
+*.key.pem
+*.key.pem.tmp
